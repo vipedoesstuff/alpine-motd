@@ -1,0 +1,162 @@
+#!/bin/sh
+
+# ============================================================
+#                    ALPINE SYSTEM MOTD
+# ============================================================
+
+# ---------- Colors ----------
+BOLD='\033[1m'
+CYAN='\033[36m'
+BLUE='\033[34m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+RED='\033[31m'
+WHITE='\033[37m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# ---------- Basic information ----------
+HOST="$(hostname)"
+KERNEL="$(uname -r)"
+ALPINE="$(cat /etc/alpine-release 2>/dev/null || echo 'Unknown')"
+UPTIME="$(uptime 2>/dev/null | sed 's/^.*up //' | sed 's/, *[0-9]* user.*$//')"
+DATE="$(date '+%A, %B %d, %Y')"
+TIME="$(date '+%I:%M:%S %p %Z')"
+
+# ---------- Memory ----------
+MEM_TOTAL="$(awk '/MemTotal/ {printf "%.0f MB", $2/1024}' /proc/meminfo)"
+MEM_FREE="$(awk '/MemAvailable/ {printf "%.0f MB", $2/1024}' /proc/meminfo)"
+
+if [ -n "$MEM_TOTAL" ] && [ -n "$MEM_FREE" ]; then
+    MEM_USED_MB="$(awk '/MemTotal/ {t=$2} /MemAvailable/ {a=$2} END {printf "%.0f", (t-a)/1024}' /proc/meminfo)"
+    MEM_TOTAL_MB="$(awk '/MemTotal/ {printf "%.0f", $2/1024}' /proc/meminfo)"
+
+    if [ "$MEM_TOTAL_MB" -gt 0 ]; then
+        MEM_PERCENT="$(awk -v u="$MEM_USED_MB" -v t="$MEM_TOTAL_MB" 'BEGIN {printf "%.0f", (u/t)*100}')"
+    else
+        MEM_PERCENT="0"
+    fi
+
+    MEMORY="${MEM_USED_MB} MB / ${MEM_TOTAL_MB} MB (${MEM_PERCENT}%)"
+else
+    MEMORY="Unavailable"
+fi
+
+# ---------- Load ----------
+LOAD="$(awk '{print $1 " / " $2 " / " $3}' /proc/loadavg)"
+
+# ---------- Root filesystem ----------
+ROOT_FS="$(df -h / 2>/dev/null | awk 'NR==2 {print $3 " used / " $2 " (" $5 ")"}')"
+
+# ---------- Network ----------
+GATEWAY="$(ip route 2>/dev/null | awk '/default/ {print $3; exit}')"
+
+# ---------- DNS ----------
+DNS_SERVERS="$(awk '/^nameserver/ {printf "%s ", $2}' /etc/resolv.conf 2>/dev/null)"
+
+# ---------- Logged-in users ----------
+USERS="$(who 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
+
+# ============================================================
+#                       DISPLAY
+# ============================================================
+
+printf "\n"
+printf "${CYAN}${BOLD}"
+printf "╔══════════════════════════════════════════════════════════╗\n"
+printf "║                        /\                                ║\n"
+printf "║       WELCOME TO      /  \\\ \        ALPINE LINUX         ║\n"
+printf "║                      /____\\\ \                            ║\n"
+printf "╚══════════════════════════════════════════════════════════╝\n"
+printf "${RESET}"
+
+printf "\n"
+printf "${GREEN}${BOLD}  SYSTEM${RESET}\n"
+printf "  ├─ Hostname     : %s\n" "$HOST"
+printf "  ├─ Alpine       : %s\n" "$ALPINE"
+printf "  ├─ Kernel       : %s\n" "$KERNEL"
+printf "  ├─ Uptime       : %s\n" "$UPTIME"
+printf "  ├─ Load         : %s\n" "$LOAD"
+printf "  └─ Users        : %s\n" "${USERS:-none}"
+
+printf "\n"
+printf "${BLUE}${BOLD}  TIME${RESET}\n"
+printf "  ├─ Date         : %s\n" "$DATE"
+printf "  └─ Time         : %s\n" "$TIME"
+
+printf "\n"
+printf "${YELLOW}${BOLD}  MEMORY${RESET}\n"
+printf "  └─ RAM          : %s\n" "$MEMORY"
+
+printf "\n"
+printf "${CYAN}${BOLD}  STORAGE${RESET}\n"
+printf "  ├─ Root         : %s\n" "${ROOT_FS:-Unavailable}"
+printf "  └─ Devices:\n"
+
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS 2>/dev/null | sed 's/^/      /'
+
+printf "\n"
+printf "${CYAN}${BOLD}  USB STORAGE${RESET}\n"
+
+USB_FOUND=0
+
+for DEV in /sys/block/*; do
+    [ -e "$DEV" ] || continue
+
+    DEV_NAME="$(basename "$DEV")"
+
+    case "$DEV_NAME" in
+        sda|sdb|sdc|sdd|sde|sdf|sdg|sdh)
+            if [ -e "$DEV/removable" ]; then
+                REMOVABLE="$(cat "$DEV/removable" 2>/dev/null)"
+
+                if [ "$REMOVABLE" = "1" ]; then
+                    printf "  └─ /dev/%s\n" "$DEV_NAME"
+                    USB_FOUND=1
+                fi
+            fi
+            ;;
+    esac
+done
+
+if [ "$USB_FOUND" = "0" ]; then
+    printf "  └─ No removable USB storage detected\n"
+fi
+
+printf "\n"
+printf "${GREEN}${BOLD}  NETWORK${RESET}\n"
+
+printf "  ├─ Gateway      : %s\n" "${GATEWAY:-None}"
+printf "  ├─ DNS          : %s\n" "${DNS_SERVERS:-None}"
+printf "  └─ Interfaces:\n"
+
+ip -br addr 2>/dev/null | sed 's/^/      /'
+
+printf "\n"
+printf "${WHITE}${BOLD}  LINK STATUS${RESET}\n"
+
+for IFACE in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d'@' -f1); do
+    case "$IFACE" in
+        lo)
+            continue
+            ;;
+    esac
+
+    STATE="$(cat "/sys/class/net/$IFACE/operstate" 2>/dev/null)"
+
+    case "$STATE" in
+        up)
+            printf "  ├─ %-10s : ${GREEN}UP${RESET}\n" "$IFACE"
+            ;;
+        down)
+            printf "  ├─ %-10s : ${RED}DOWN${RESET}\n" "$IFACE"
+            ;;
+        *)
+            printf "  ├─ %-10s : %s\n" "$IFACE" "${STATE:-UNKNOWN}"
+            ;;
+    esac
+done
+
+printf "\n"
+printf "${DIM} \"Small. Simple. Secure.\"${RESET}\n"
+printf "\n"
